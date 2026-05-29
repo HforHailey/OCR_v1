@@ -27,6 +27,12 @@ try:
 except ImportError:
     raise SystemExit("ttkbootstrap not installed. Run: pip install ttkbootstrap")
 
+import ctypes
+if getattr(sys, "frozen", False):
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if hwnd:
+        ctypes.windll.user32.ShowWindow(hwnd, 6)
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
