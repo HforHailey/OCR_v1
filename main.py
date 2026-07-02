@@ -31,6 +31,19 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+# ── Suppress poppler console windows (frozen exe only) ─────────────────────────
+if sys.platform == "win32" and getattr(sys, "frozen", False):
+    import subprocess
+    _orig_popen_init = subprocess.Popen.__init__
+    def _no_console_popen_init(self, *args, **kwargs):
+        si = kwargs.get("startupinfo") or subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        kwargs["startupinfo"] = si
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        _orig_popen_init(self, *args, **kwargs)
+    subprocess.Popen.__init__ = _no_console_popen_init
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
@@ -311,6 +324,59 @@ def merge_pdfs(pdf_paths: list[str], output_path: str):
         writer.append(str(p))
     with open(output_path, "wb") as f:
         writer.write(f)
+
+
+def get_pdf_page_count(pdf_path: str) -> int:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        from PyPDF2 import PdfReader
+    try:
+        return len(PdfReader(str(pdf_path)).pages)
+    except Exception as e:
+        log.warning(f"  Could not read page count for {Path(pdf_path).name}: {e} — treating as 1 page")
+        return 1
+
+
+def split_multipage_pdfs_in_inbox(inbox: Path, cfg: dict, run_ts: str):
+    """
+    Pre-processing step: scan inbox for multi-page PDFs, split each page into
+    a separate file ({stem}-001.pdf, {stem}-002.pdf ...) in the same inbox folder,
+    then archive/delete the original.  Single-page PDFs are left untouched.
+    Called once in main() before the main pdf_files scan.
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
+        from PyPDF2 import PdfReader, PdfWriter
+
+    candidates = sorted([p for p in inbox.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"])
+
+    for pdf_path in candidates:
+        page_count = get_pdf_page_count(str(pdf_path))
+        if page_count <= 1:
+            continue
+
+        log.info(f"Multi-page detected: {pdf_path.name} ({page_count} pages) → splitting")
+        try:
+            reader = PdfReader(str(pdf_path))
+            stem   = pdf_path.stem
+
+            for i, page in enumerate(reader.pages, start=1):
+                writer = PdfWriter()
+                writer.add_page(page)
+                page_path = inbox / f"{stem}-{i:03d}.pdf"
+                with open(page_path, "wb") as f:
+                    writer.write(f)
+                log.info(f"  → Split page: {page_path.name}")
+
+            # Archive original if configured, then delete from inbox
+            archive_files([str(pdf_path)], cfg, run_ts)
+            pdf_path.unlink()
+            log.info(f"  Original removed from inbox: {pdf_path.name}")
+
+        except Exception as e:
+            log.error(f"  Split failed for {pdf_path.name}: {e} — leaving original intact")
 
 
 # ── File operations ───────────────────────────────────────────────────────────
@@ -633,6 +699,8 @@ def main():
     if not inbox.exists():
         log.error(f"Inbox folder not found: {inbox}")
         sys.exit(1)
+
+    split_multipage_pdfs_in_inbox(inbox, cfg, run_ts)
 
     pdf_files = sorted(
         [str(p) for p in inbox.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"]

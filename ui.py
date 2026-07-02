@@ -1125,6 +1125,8 @@ class App(ttk.Window):
                 self.after(0, self._on_run_done, None)
                 return
 
+            m.split_multipage_pdfs_in_inbox(inbox, cfg, run_ts)
+
             pdf_files = sorted(
                 [str(p) for p in inbox.iterdir()
                  if p.is_file() and p.suffix.lower() == ".pdf"]
